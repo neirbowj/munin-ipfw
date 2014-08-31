@@ -9,5 +9,192 @@
 # The full license is in the LICENSE file, distributed with this software.
 #-----------------------------------------------------------------------------
 
+"""
+TODO: Write munindoc content here
+"""
+
+from __future__ import print_function
+
+import os
+import sys
+import subprocess
+import re
+from collections import defaultdict, OrderedDict
+import itertools
+
+def get_cmd_output(cmd, opts, rules=None):
+    """
+    Invoke an ipfw-like command defined by `cmd`, `opts`, and `rules` (opt),
+    and return all lines of output
+    """
+    call_params = [cmd, opts, 'show']
+    if rules is not None:
+        call_params = call_params + rules.split(' ')
+    output = subprocess.check_output(call_params)
+    return output
+
+
+def parse(lines):
+    """
+    Accepts `lines` which is an iterable that yields strings of the form
+
+        <ruleno>    <pktcount>   <bytecount> [set N] <rest of rule body>
+
+    Returns an OrderedDict sorted by `ruleno` as the keys (still strings),
+    and the values are lists of tuples:
+
+        (int(`pktcount`), int(`bytecount`), `whole rule body`)
+    """
+    results = defaultdict(list)
+    for line in lines:
+        ruleno, npkt, nbyte, body = re.split('\W+', line, 3)
+        results[ruleno].append((int(npkt), int(nbyte), body))
+    return OrderedDict(sorted(results.items(), key=lambda t: t[0]))
+
+
+def is_deny(rule):
+    return re.search('^(?:set [0-9]+ )deny', rule) is not None
+
+
+def get_config(parsed_data, instance, rules=None, regex=None):
+    rules_info = ''
+    if rules:
+        rules_info = ' on rule(s) {}'.format(rules)
+
+    regex_info = ''
+    if regex:
+        regex_info = " that match '{}'".format(regex)
+
+    config = ''
+
+    nb = [] # Name, Body
+    for ruleno, rulelist in parsed_data.items():
+        if len(rulelist) > 1:
+            for i, pbb in enumerate(rulelist):
+                nb.append(('{}_{}'.format(ruleno, i), pbb[2]))
+        else:
+            nb.append((ruleno, rulelist[0][2]))
+
+    config = config + (
+        "multigraph ipfw_{inst}_packets\n"
+        "graph_title IPFW Matching Packets ({inst})\n"
+        "graph_vlabel packets "
+        "allow (+) / deny (-) per ${{graph_period}}\n"
+        "graph_category firewall\n"
+        "graph_info This graph shows firewall hits{ru}{rx}\n".format(
+            inst=instance, ru=rules_info, rx=regex_info)
+    )
+
+    for dpc in get_datapoint_config(nb):
+        config = config + dpc
+
+    config = config + (
+        "multigraph ipfw_{inst}_bits\n"
+        "graph_title IPFW Matching Bits ({inst})\n"
+        "graph_vlabel bits "
+        "allow (+) / deny (-) per ${{graph_period}}\n"
+        "graph_category firewall\n"
+        "graph_info This graph shows firewall hits{ru}{rx}\n".format(
+            inst=instance, ru=rules_info, rx=regex_info)
+    )
+
+    for dpc in get_datapoint_config(nb, mul=8):
+        config = config + dpc
+
+    return config
+
+
+def get_comment(rule_def):
+    """
+    Accepts a line from the output of 'ipfw show' that may end with a
+    comment. Returns the comment or an empty string if there is none.
+    """
+    m = re.search(r'// (.*)$', rule_def)
+    if m:
+        return m.group(1)
+    else:
+        return ''
+
+
+def get_datapoint_config(name_body_iter, mul=1):
+    for name, body in name_body_iter:
+        comment = get_comment(body)
+        sign = ''
+        if is_deny(body):
+            sign = '-'
+        yield (
+            "r{name}.label {name} {comment}\n"
+            "r{name}.type DERIVE\n"
+            "r{name}.min 0\n"
+            "r{name}.cdef r{name},{sign}{mul},*\n"
+            "r{name}.info {body}\n".format(
+                name=name,
+                comment=comment,
+                sign=sign,
+                mul=mul,
+                body=body
+            )
+        )
+
+
+def get_values(parsed_data, instance):
+    npv = [] # (name, packet counter)
+    nbv = [] # (name, byte counter)
+    for ruleno, rulelist in parsed_data.items():
+        if len(rulelist) > 1:
+            for i, pbb in enumerate(rulelist):
+                name = 'r{}_{}'.format(ruleno, i)
+                npv.append((name, pbb[0]))
+                nbv.append((name, pbb[1]))
+        else:
+            npv.append((ruleno, rulelist[0][0]))
+            nbv.append((ruleno, rulelist[0][1]))
+
+    vals = 'multigraph ipfw_{}_packets\n'.format(instance)
+
+    for name, val in npv:
+        vals = vals + 'r{name}.value {val}\n'.format(name=name, val=val)
+
+    vals = vals + 'multigraph ipfw_{}_bits\n'.format(instance)
+
+    for name, val in nbv:
+        vals = vals + 'r{name}.value {val}\n'.format(name=name, val=val)
+
+    return vals
+
+
+def die(msg):
+    print(msg, file=sys.stderr)
+    sys.exit(1)
+
+
+def main(args):
+    ipfw_cmd            = os.environ.get('IPFWCMD', '/sbin/ipfw')
+    ipfw_opts           = os.environ.get('IPFWOPTS', '-S')
+    ipfw_rules          = os.environ.get('IPFWRULES', None)
+    ipfw_regex          = os.environ.get('IPFWREGEX', None)
+    script, _, instance = args[0].partition('_')
+
+    if instance == '':
+        instance = 'default'
+
+    if len(args) > 2:
+        die('ERROR: Invoked with too many arguments')
+
+    if len(args) == 2 and args[1] != 'config':
+        die("ERROR: Do not understand '{}'".format(args[1]))
+
+    ipfw_output = get_cmd_output(ipfw_cmd, ipfw_opts, ipfw_rules)
+    # TODO: filter based on regex
+    data = parse(ipfw_output.splitlines())
+
+    if len(args) == 2:
+        plugin_output = get_config(data, instance, ipfw_rules, ipfw_regex)
+    else:
+        plugin_output = get_values(data, instance)
+
+    print(plugin_output)
+
+
 if __name__ == '__main__':
-    pass
+    main(sys.argv)
