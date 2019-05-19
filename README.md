@@ -15,7 +15,7 @@ counters from the [FreeBSD][fbsd] Internet Protocol FireWall
 
 The goals of this project are to:
 
-  - run under Python 2.7, 3.3, and 3.4, at least
+  - run under Python 2.7 and 3.6, at least
   - consume the output of ``ipfw show`` and generate data suitable
     for consumption by munin-node 2.0.x
   - accept configuration parameters via environment variables
@@ -40,5 +40,5 @@ can be found at: https://github.com/neirbowj/munin-ipfw
 
 ## About the author
 
-John W. O'Brien is a senior network engineer and technologist at a large,
-US university, and operates a small consultancy.
+John W. O'Brien is a member of the networking staff and a technologist
+at a large, US university, and operates a small consultancy.
