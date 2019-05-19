@@ -30,7 +30,7 @@ def get_cmd_output(cmd, opts, rules=None):
     call_params = [cmd, opts, 'show']
     if rules is not None:
         call_params = call_params + rules.split(' ')
-    output = subprocess.check_output(call_params)
+    output = subprocess.check_output(call_params).decode('utf8')
     return output
 
 
